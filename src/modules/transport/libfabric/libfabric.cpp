@@ -640,15 +640,13 @@ int nvshmemt_libfabric_gdr_process_amos_ack(nvshmem_transport_t transport, int q
 
     for (int i = qp_index; i < end_iter; i++) {
 
-        size_t num_retries = 0;
         do {
-            do {
-                status = libfabric_state->op_queue[i]->getNextAmoOps(send_elems, &op,
-                                                                NVSHMEMT_LIBFABRIC_RECV_TYPE_ACK);
-            } while (try_again(transport, &status, &num_retries, i,
-                            NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_GDR_PROCESS_AMOS_GET_NEXT_ACK,
-                            true));
-            num_retries = 0;
+            status = libfabric_state->op_queue[i]->getNextAmoOps(send_elems, &op,
+                                                            NVSHMEMT_LIBFABRIC_RECV_TYPE_ACK);
+            if (status == -EAGAIN) {
+                status = 0;
+                break;
+            }
 
             if (op) {
                 status = nvshmemt_libfabric_gdr_process_ack(transport, op);
@@ -671,7 +669,6 @@ int nvshmemt_libfabric_gdr_process_amos(nvshmem_transport_t transport, int qp_in
     nvshmemt_libfabric_state_t *libfabric_state = (nvshmemt_libfabric_state_t *)transport->state;
     nvshmemt_libfabric_gdr_op_ctx_t *op;
     nvshmemt_libfabric_gdr_op_ctx_t *send_elems[2];
-    size_t num_retries = 0;
     int status = 0;
     int end_iter;
 
@@ -688,13 +685,12 @@ int nvshmemt_libfabric_gdr_process_amos(nvshmem_transport_t transport, int qp_in
     for (int i = qp_index; i < end_iter; i++) {
 
         do {
-            do {
-                status = libfabric_state->op_queue[i]->getNextAmoOps(send_elems, &op,
-                                                                    NVSHMEMT_LIBFABRIC_RECV_TYPE_NOT_ACK);
-            } while (try_again(transport, &status, &num_retries, i,
-                            NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_GDR_PROCESS_AMOS_GET_NEXT_NOT_ACK,
-                            true));
-            num_retries = 0;
+            status = libfabric_state->op_queue[i]->getNextAmoOps(send_elems, &op,
+                                                                NVSHMEMT_LIBFABRIC_RECV_TYPE_NOT_ACK);
+            if (status == -EAGAIN) {
+                status = 0;
+                break;
+            }
 
             if (op) {
                 if (op->type == NVSHMEMT_LIBFABRIC_SEND) {
@@ -851,12 +847,12 @@ int nvshmemt_libfabric_put_signal_completion(nvshmem_transport_t transport,
             } else {
                 nvshmemt_libfabric_endpoint_t *ack_ep = it->second.ack_entry.ep;
                 nvshmemt_libfabric_gdr_op_ctx_t *send_elem;
-                uint64_t num_retries = 0;
-                do {
-                    status = libfabric_state->op_queue[ack_ep->domain_index]->getNextSends(
-                        (void **)(&send_elem), 1);
-                } while (try_again(transport, &status, &num_retries, ack_ep->domain_index,
-                                  NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_GDRCOPY_AMO_ACK, true));
+                status = libfabric_state->op_queue[ack_ep->domain_index]->getNextSends(
+                    (void **)(&send_elem), 1);
+                if (status) {
+                    status = 0;
+                    break;
+                }
 
                 if (status == 0) {
                     status = gdrcopy_amo_ack(transport, ack_ep, it->second.ack_entry.src_addr, next_seq, pe,
