@@ -70,7 +70,7 @@ static bool use_gdrcopy = false;
 static bool use_staged_atomics = false;
 static bool use_auto_progress = false;
 
-std::recursive_mutex gdrRecvMutex;
+conditional_mutex gdrRecvMutex;
 
 typedef enum {
     NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_GDRCOPY_AMO_ACK,
@@ -330,12 +330,11 @@ static int nvshmemt_libfabric_progress(nvshmem_transport_t transport, int qp_ind
     int progress_qp_index = (use_auto_progress ? qp_index : NVSHMEMX_QP_ALL);
 
     if (libfabric_state->provider == NVSHMEMT_LIBFABRIC_PROVIDER_EFA) {
-        if (gdrRecvMutex.try_lock()) {
-            status = nvshmemt_libfabric_gdr_process_amos(transport, progress_qp_index);
-            if (status) {
-                return NVSHMEMX_ERROR_INTERNAL;
-            }
-            gdrRecvMutex.unlock();
+        gdrRecvMutex.lock();
+        status = nvshmemt_libfabric_gdr_process_amos(transport, progress_qp_index);
+        gdrRecvMutex.unlock();
+        if (status) {
+            return NVSHMEMX_ERROR_INTERNAL;
         }
     }
 
@@ -1783,6 +1782,7 @@ static int nvshmemt_libfabric_connect_endpoints(nvshmem_transport_t t, int *sele
 
             state->op_queue.push_back(new threadSafeOpQueue);
             state->op_queue[i]->putToSendBulk((char *)state->send_buf[i], elem_size, num_sends);
+            state->op_queue[i]->set_auto_progress(use_auto_progress);
         }
 
         status = fi_av_open(domain, &av_attr, &address, NULL);
@@ -2207,6 +2207,7 @@ static int nvshmemi_libfabric_init_state(nvshmem_transport_t t, nvshmemt_libfabr
      */
     if (!status && strstr(all_infos->fabric_attr->name, options->LIBFABRIC_PROVIDER)) {
         use_auto_progress = true;
+        gdrRecvMutex.set_needs_lock(false);
     } else {
         fi_freeinfo(all_infos);
 
