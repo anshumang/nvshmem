@@ -62,6 +62,7 @@ static bool use_gdrcopy = false;
 #endif
 
 #define MAX_COMPLETIONS_PER_CQ_POLL 300
+#define MAX_COMPLETIONS_PER_CQ_POLL_EFA 32
 #define NVSHMEM_STAGED_AMO_WIREDATA_SIZE \
     sizeof(nvshmemt_libfabric_gdr_op_ctx_t) - sizeof(struct fi_context2) - sizeof(fi_addr_t)
 
@@ -235,8 +236,11 @@ out:
 static int nvshmemt_libfabric_single_ep_progress(nvshmem_transport_t transport,
                                                  nvshmemt_libfabric_endpoint_t *ep) {
     nvshmemt_libfabric_state_t *state = (nvshmemt_libfabric_state_t *)transport->state;
-    char buf[MAX_COMPLETIONS_PER_CQ_POLL * sizeof(struct fi_cq_data_entry)];
-    fi_addr_t src_addr[MAX_COMPLETIONS_PER_CQ_POLL];
+    int max_per_poll = (state->provider == NVSHMEMT_LIBFABRIC_PROVIDER_EFA)
+                           ? MAX_COMPLETIONS_PER_CQ_POLL_EFA
+                           : MAX_COMPLETIONS_PER_CQ_POLL;
+    char buf[max_per_poll * sizeof(struct fi_cq_data_entry)];
+    fi_addr_t src_addr[max_per_poll];
     fi_addr_t *addr;
     ssize_t qstatus;
     struct fi_cq_data_entry *entry;
@@ -266,25 +270,20 @@ static int nvshmemt_libfabric_single_ep_progress(nvshmem_transport_t transport,
         return NVSHMEMX_ERROR_INTERNAL;
     }
 
-    int ops_processed = 0;
-    do {
-        qstatus = fi_cq_readfrom(ep->cq, buf, MAX_COMPLETIONS_PER_CQ_POLL, src_addr);
-        /* Note - EFA provider does not support selective completions */
-        if (qstatus > 0) {
-            ops_processed += qstatus;
-            if (state->provider == NVSHMEMT_LIBFABRIC_PROVIDER_EFA) {
-                entry = (struct fi_cq_data_entry *)buf;
-                addr = src_addr;
-                for (int i = 0; i < qstatus; i++, entry++, addr++) {
-                    status = nvshmemt_libfabric_gdr_process_completion(transport, ep, entry, addr);
-                    if (status) return NVSHMEMX_ERROR_INTERNAL;
-                }
-            } else {
-                NVSHMEMI_WARN_PRINT("Got %zd unexpected events on EP\n", qstatus);
+    qstatus = fi_cq_readfrom(ep->cq, buf, max_per_poll, src_addr);
+    /* Note - EFA provider does not support selective completions */
+    if (qstatus > 0) {
+        if (state->provider == NVSHMEMT_LIBFABRIC_PROVIDER_EFA) {
+            entry = (struct fi_cq_data_entry *)buf;
+            addr = src_addr;
+            for (int i = 0; i < qstatus; i++, entry++, addr++) {
+                status = nvshmemt_libfabric_gdr_process_completion(transport, ep, entry, addr);
+                if (status) return NVSHMEMX_ERROR_INTERNAL;
             }
+        } else {
+            NVSHMEMI_WARN_PRINT("Got %zd unexpected events on EP\n", qstatus);
         }
-    } while (qstatus > 0 && ops_processed < state->proxy_request_batch_max);
-    if (qstatus < 0 && qstatus != -FI_EAGAIN) {
+    } else if (qstatus < 0 && qstatus != -FI_EAGAIN) {
         NVSHMEMI_WARN_PRINT("Error progressing CQ (%zd): %s\n", qstatus, fi_strerror(qstatus * -1));
         return NVSHMEMX_ERROR_INTERNAL;
     }
